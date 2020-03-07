@@ -21,7 +21,7 @@ struct myEvent_s
 {
 	int fd;			//要监听的文件描述符
 	int events;		//对应的监听事件
-	void *arg;
+	void *arg;		//指向自己结构体指针
 	void (*call_back)(int fd, int events, void *arg);
 	int status;		//是否在监听：1 在红黑数上（监听） 0 不在（不监听）
 	char buf[BUFLEN];
@@ -30,7 +30,7 @@ struct myEvent_s
 };
 
 int g_efd;			//全局变量，保存epoll_create返回的文件描述符
-struct myEvent_s g_events[MAX_EVENTS + 1];
+struct myEvent_s g_events[MAX_EVENTS + 1];	//+1 最后一个用于listen fd
 
 //将结构体myEvent_s成员变量初始化
 void eventSet(struct myEvent_s *ev, int fd, void (*call_back)(int, int, void *), void *arg)
@@ -54,16 +54,24 @@ void eventAdd(int efd, int events, struct myEvent_s *ev)
 	epv.data.ptr = ev;
 	epv.events = ev->events = events;
 
-	if(ev->status == 0)
+	if(ev->status == 1)
+	{
+		op = EPOLL_CTL_MOD;
+	}
+	else
 	{
 		op = EPOLL_CTL_ADD;
 		ev->status = 1;
 	}
 
 	if(epoll_ctl(efd, op, ev->fd, &epv) < 0)
+	{
 		printf("event add failed [fd=%d], events[%d]\n", ev->fd, events);
+	}
 	else
+	{
 		printf("event add OK [fd=%d], op=%d, events[%0X]\n", ev->fd, op, events);
+	}
 
 	return;
 }
@@ -212,6 +220,8 @@ int main(int argc, char *argv[])
 	int checkPos = 0, i;
 	while(1)
 	{
+		//超时验证，每次测试100个链接，不测试listenfd
+		//当客户端60秒内没有和服务器通信，则关闭此客户端链接
 		long now = time(NULL);
 		//一次循环检测100个，使用checkPos控制检测对象
 		for(i = 0; i < 100; i++, checkPos++)
@@ -230,7 +240,7 @@ int main(int argc, char *argv[])
 				eventDel(g_efd, &g_events[checkPos]);
 			}
 		}
-		
+		//等待事件发生
 		int nfd = epoll_wait(g_efd, events, MAX_EVENTS + 1, 1000);
 		if(nfd < 0)
 		{
