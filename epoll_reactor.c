@@ -14,6 +14,19 @@
 #define BUFLEN		4096
 #define SERV_PORT	8080
 
+/*
+ * 部分关于代码的理解 20200308
+ * 1.initListenSocket中，注册监听lfd，该监听的回调函数是acceptConn，将该事件注册为读事件并添加到红黑树
+ * 2.此时，lfd是（struct myEvent_s）g_events最后一个元素
+ * 3.有客户端连接请求时，调用acceptConn函数，accept接受连接后，修改cfd为非阻塞读
+ * 4.通过判断status，寻找一个未监听位置，超过MAX_EVENTS会直接跳出
+ * 5.将cfd添加到寻找到的未监听位置，该监听的回调函数是recvData，将该事件注册为读事件并添加到红黑树
+ * 6.recvData函数，将监听从红黑树删除，然后处理数据
+ *	len > 0:  len是接收到数据的长度，处理数据后，将该事件注册为写事件并添加到红黑树
+ *	len = 0：对端连接关闭，主动关闭该fd
+ *	len < 0：报错，需根据错误码分析，可能当前不可读、不可写，可能需要重试
+ * */
+
 void recvData(int fd, int events, void *arg);
 void sendData(int fd, int events, void *arg);
 
@@ -101,9 +114,12 @@ void acceptConn(int lfd, int events, void *arg)
 
 	do
 	{
-		for (i = 0; i < MAX_EVENTS; i++)
-			if(g_events[i].status == 0)
+		//在g_events中寻找一个不在监听的位置
+		for (i = 0; i < MAX_EVENTS; i++) {
+			if(g_events[i].status == 0) {
 				break;
+			}
+		}
 
 		if(i == MAX_EVENTS)
 		{
@@ -144,8 +160,21 @@ void recvData(int fd, int events, void *arg)
 		ev->buf[len] = '\0';
 		printf("C[%d]:%s\n", fd, ev->buf);
 
+		//提供字母小写转大写服务
+		char new_buf[BUFLEN] = {0};
+		for(int i = 0; i < len; i++) {
+			if(ev->buf[i] >= 'a' && ev->buf[i] <= 'z') {
+				new_buf[i] = ev->buf[i] + 'A' - 'a';
+			} else {
+				new_buf[i] = ev->buf[i];
+			}
+		}
+		new_buf[len] = '\0';
 		eventSet(ev, fd, sendData, ev);
-
+		for(int i = 0; i < len; i++) {
+			ev->buf[i] = new_buf[i];
+		}
+		ev->len = len;
 		eventAdd(g_efd, EPOLLOUT, ev);
 	}
 	else if(len == 0)
@@ -205,12 +234,14 @@ int main(int argc, char *argv[])
 {
 	unsigned short port = SERV_PORT;
 
-	if(2 == argc)
+	if(2 == argc) {
 		port = atoi(argv[1]);
+	}
 
 	g_efd = epoll_create(MAX_EVENTS + 1);
-	if(g_efd <= 0)
+	if(g_efd <= 0) {
 		printf("create efd in %s err %s\n", __func__, strerror(errno));
+	}
 
 	initListenSocket(g_efd, port);
 
@@ -252,11 +283,13 @@ int main(int argc, char *argv[])
 		{
 			struct myEvent_s *ev = (struct myEvent_s *)events[i].data.ptr;
 			//读就绪事件
-			if((events[i].events & EPOLLIN) && (ev->events & EPOLLIN))
+			if((events[i].events & EPOLLIN) && (ev->events & EPOLLIN)) {
 				ev->call_back(ev->fd, events[i].events, ev->arg);
+			}
 			//写就绪事件
-			if((events[i].events & EPOLLOUT) && (ev->events & EPOLLOUT))
+			if((events[i].events & EPOLLOUT) && (ev->events & EPOLLOUT)) {
 				ev->call_back(ev->fd, events[i].events, ev->arg);
+			}
 		}
 	}
 
