@@ -127,6 +127,7 @@ void acceptConn(int lfd, int events, void *arg)
 			break;
 		}
 
+		//将cfd设置为非阻塞
 		int flag = 0;
 		if ((flag = fcntl(cfd, F_SETFL, O_NONBLOCK)) < 0)
 		{
