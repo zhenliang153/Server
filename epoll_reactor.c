@@ -185,8 +185,11 @@ void recvData(int fd, int events, void *arg)
 	}
 	else
 	{
-		close(ev->fd);
-		printf("recv[fd=%d] error[%d]:%s\n", fd, errno, strerror(errno));
+		if(errno != EWOULDBLOCK && errno != EINTR)
+		{
+			close(ev->fd);
+			printf("recv[fd=%d] error[%d]:%s\n", fd, errno, strerror(errno));
+		}
 	}
 
 	return;
@@ -207,8 +210,11 @@ void sendData(int fd, int events, void *arg)
 	}
 	else
 	{
-		close(ev->fd);
-		printf("send[fd=%d] error %s\n", fd, strerror(errno));
+		if(errno != EWOULDBLOCK && errno != EINTR)
+		{
+			close(ev->fd);
+			printf("send[fd=%d] error %s\n", fd, strerror(errno));
+		}
 	}
 
 	return;
@@ -276,10 +282,17 @@ int main(int argc, char *argv[])
 		int nfd = epoll_wait(g_efd, events, MAX_EVENTS + 1, 1000);
 		if(nfd < 0)
 		{
+			//被信号中断
+			if(errno == EINTR)
+				continue;
 			printf("epoll_wait error, exit\n");
 			break;
 		}
-
+		else if(nfd == 0)
+		{
+			printf("epoll timeout!\n");
+			continue;
+		}
 		for(i = 0; i < nfd; i++)
 		{
 			struct myEvent_s *ev = (struct myEvent_s *)events[i].data.ptr;
