@@ -7,6 +7,11 @@
 #include <sys/socket.h>
 #include <errno.h>
 
+#define SELECT
+#ifndef SELECT
+#include <poll.h>
+#endif
+
 /*
  *异步的 connect 技术，或者叫非阻塞的 connect
  *1.创建socket，并将socket设置为非阻塞模式
@@ -64,18 +69,39 @@ int main(void) {
 		}
 	}
 
+	//3.调用select或poll函数，检测是否可写
+#ifdef SELECT
 	fd_set writeset;
 	FD_ZERO(&writeset);
 	FD_SET(cfd, &writeset);
 	struct timeval tv;
 	tv.tv_sec = 3;
 	tv.tv_usec = 0;
-	//3.调用select函数，检测是否可写
+	//调用select函数，检测是否可写
 	if(select(cfd+1, NULL, &writeset, NULL, &tv) == 1) {
 		printf("[select]connect to server ok!\n");
 	} else {
 		printf("[select]connect to server error!\n");
 	}
+#else
+	struct pollfd event;
+	event.fd = cfd;
+	event.events = POLLOUT;
+	int timeout = 3000;
+	//调用poll函数，检测是否可写
+	if(poll(&event, 1, timeout) != 1) {
+		printf("[poll]connect to server error!\n");
+		close(cfd);
+		return -1;
+	}
+	if(!(event.events & POLLOUT)) {
+		printf("[POLLOUT]connect to server error!\n");
+		close(cfd);
+		return -1;
+	}
+	printf("[poll]connect to server ok!\n");
+#endif
+
 	/*
 	*在Linux系统上一个socket没有建立连接之前，用select函数检测其是否可写，也会得到可写的结果。所以
 	*connect之后，不仅要用select检测可写，还要检测此时socket是否出错，通过错误码来检测确定是否连接上。
