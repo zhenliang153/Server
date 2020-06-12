@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #define MAXLINE 	80
 #define SERV_PORT	8000
@@ -48,14 +49,30 @@ int main(int argc, char *argv[])
 
 		if (nready < 0)
 		{
+			//除了函数调用出错，信号中断也会返回-1，所以务必要考虑到这种情况
+			if(errno == EINTR)
+			{
+				printf("connecting interruptted by signal, try again!\n");
+				continue;
+			}
 			perror("select error");
 			exit(1);
+		}
+		else if (nready == 0)
+		{
+			printf("select timeout!\n");
+			continue;
 		}
 		if (FD_ISSET(listenfd, &rset)) 
 		{ 
 			//new client connection
 			cliaddr_len = sizeof(cliaddr);
 			connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &cliaddr_len);
+			if(connfd == -1)
+			{
+				printf("accept error!\n");
+				break;
+			}
 			printf("received from %s at PORT %d\n",
 					inet_ntop(AF_INET, &cliaddr.sin_addr, str, sizeof(str)),
 					ntohs(cliaddr.sin_port));
@@ -99,6 +116,15 @@ int main(int argc, char *argv[])
 					FD_CLR(sockfd, &allset);
 					client[i] = -1;
 				} 
+				else if(n == -1)
+				{
+					//除了被信号中断的情形，其他情况都是出错
+					if(errno != EINTR)
+					{
+						printf("read error!\n");
+						break;
+					}
+				}
 				else 
 				{
 					int j;

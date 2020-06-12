@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <arpa/inet.h>
 #include <sys/epoll.h>
+#include <errno.h>
 
 #define	SERV_PORT	8000
 #define	OPEN_MAX	1024
@@ -50,7 +51,19 @@ int main(void)
 		//阻塞监听
 		nReady = epoll_wait(efd, ep, OPEN_MAX, -1);
 		if(-1 == nReady)
+		{
+			if(errno == EINTR)
+			{
+				printf("connecting interruptted by signal, try again!\n");
+				continue;
+			}
 			perr_exit("epoll_wait");
+		}
+		else if(0 == nReady)
+		{
+			printf("epoll timeout\n");
+			continue;
+		}
 		for(i = 0; i < nReady; i++)
 		{
 			//有新的客户端发出连接请求
@@ -58,6 +71,11 @@ int main(void)
 			{
 				cli_len = sizeof(cli_addr);
 				cfd = accept(lfd, (struct sockaddr *)&cli_addr, &cli_len);
+				if(cfd == -1)
+				{
+					printf("accept error!\n");
+					break;
+				}
 				printf("received from %s at PORT %d\n", 
 						inet_ntop(AF_INET, &cli_addr.sin_addr, str, sizeof(str)),
 						ntohs(cli_addr.sin_port));
@@ -71,9 +89,20 @@ int main(void)
 			{
 				sfd = ep[i].data.fd;
 				len = read(sfd, buf, sizeof(buf));
-				//表示客户端关闭
-				if(0 == len)
+				if(-1 == len)
 				{
+					if(errno != EWOULDBLOCK && errno != EINTR)
+					{
+						if(epoll_ctl(efd, EPOLL_CTL_DEL, ep[i].data.fd, NULL) != -1)
+						{
+							printf("client disconnected,clientfd: %d\n", ep[i].data.fd);
+						}
+						close(ep[i].data.fd);
+					}
+				}
+				else if(0 == len)
+				{
+					//表示客户端关闭
 					res = epoll_ctl(efd, EPOLL_CTL_DEL, sfd, NULL);
 					close(sfd);
 					printf("client[%d] closed connection\n", j);

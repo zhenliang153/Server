@@ -43,11 +43,31 @@ int main(int argc, char *argv[])
 	for ( ; ; )
 	{
 		nready = poll(client, maxi+1, -1);	//阻塞
+		if(nready == -1)
+		{
+			if(errno == EINTR)
+			{
+				//信号中断也会返回-1，所以务必要考虑到这种情况
+				printf("connecting interruptted by signal, try again!\n");
+				continue;
+			}
+			break;
+		}
+		else if(nready == 0)
+		{
+			printf("poll timeout!\n");
+			continue;
+		}
 		if (client[0].revents & POLLIN)
 		{
 			//有客户端链接请求
 			clilen = sizeof(cliaddr);
 			connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &clilen);
+			if(connfd == -1)
+			{
+				printf("accept error!\n");
+				break;
+			}
 			printf("received from %s at PORT %d\n",
 					inet_ntop(AF_INET, &cliaddr.sin_addr, str, sizeof(str)),
 					ntohs(cliaddr.sin_port));
@@ -82,19 +102,15 @@ int main(int argc, char *argv[])
 			{
 				if ((n = read(sockfd, buf, MAXLINE)) < 0)
 				{
-					if (errno == ECONNRESET)
+					//当收到RST标志时
+					//connection reset by client
+					//if (errno == ECONNRESET)
+					if (errno != EINTR && errno != EWOULDBLOCK)
 					{
-						//当收到RST标志时
-						//connection reset by client
 						printf("client[%d] aborted connection\n", i);
 						close(sockfd);
 						client[i].fd = -1;
 					} 
-					else 
-					{
-						perror("read error");
-						exit(1);
-					}
 				}
 				else if (n == 0)
 				{
