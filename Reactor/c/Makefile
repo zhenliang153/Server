@@ -1,14 +1,18 @@
-SOURCE = $(wildcard *.c)
-TARGETS = $(patsubst %.c, %, $(SOURCE))
- 
-CC = gcc
-CFLAGS = -Wall -g
+SOURCES = $(wildcard *.c)
+OBJECTS = $(patsubst %.c, %.o, $(SOURCES))
 
-all:$(TARGETS)
- 
-$(TARGETS):%:%.c
-	$(CC) $(CFLAGS) -o $@ $< -lpthread
+CC = gcc
+CFLAGS = -Wall -g -O2
+LIBRARY = -lpthread
+
+TARGET = reactor
+
+$(TARGET): $(OBJECTS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBRARY)
+
+.cpp.o:
+	$(CC) $(CFLAGS) -c -o $@ $< $(LIBRARY)
 
 .PHONY: clean
 clean:
-	rm -rf $(TARGETS)
+	rm -f $(TARGET) *.o
