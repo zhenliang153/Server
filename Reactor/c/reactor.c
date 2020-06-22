@@ -89,9 +89,6 @@ int back() {
 	return list->tail->fd;
 }
 /********************************************/
-char strclientmsg[2048];
-int msglen = 0;
-/********************************************/
 
 //创建守护进程
 void daemon_run() {
@@ -151,8 +148,7 @@ int create_server_listener(unsigned int ip, short port) {
 	}
 	struct epoll_event ep;
 	memset(&ep, 0, sizeof(ep));
-	//ep.events = EPOLLIN | EPOLLRDHUP;
-	ep.events = EPOLLIN;// | EPOLLRDHUP;
+	ep.events = EPOLLIN | EPOLLRDHUP;
 	ep.data.fd = g_listenfd;	
 	if(epoll_ctl(g_epollfd, EPOLL_CTL_ADD, g_listenfd, &ep) == -1) {
 		printf("epoll_ctl error!\n");
@@ -194,8 +190,8 @@ void* accept_thread_func(void* arg) {
 		if(newfd == -1) {
 			continue;
 		}
-		printf("new client connected: %s:%hd\n", inet_ntoa(clientaddr.sin_addr),
-													ntohs(clientaddr.sin_port));
+		printf("new client connected: %s:%hd\n",
+			inet_ntoa(clientaddr.sin_addr), ntohs(clientaddr.sin_port));
 		//将新socket设置为非阻塞
 		int oldflag = fcntl(newfd, F_GETFL, 0);
 		int newflag = oldflag | O_NONBLOCK;
@@ -205,8 +201,7 @@ void* accept_thread_func(void* arg) {
 		}
 		struct epoll_event ep;
 		memset(&ep, 0, sizeof(ep));
-		//ep.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
-		ep.events = EPOLLIN | EPOLLET;
+		ep.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
 		ep.data.fd = newfd;
 		if(epoll_ctl(g_epollfd, EPOLL_CTL_ADD, newfd, &ep) == -1) {
 			printf("epoll_ctl error, fd = %d.", newfd);
@@ -223,6 +218,8 @@ void release_client(int clientfd) {
 }
 
 void* worker_thread_func(void* arg) {
+	char* strclientmsg = (char*)arg;
+	int msglen = 0;
 	while(g_stop == 0) {
 		pthread_mutex_lock(&g_clientmutex);
 		while(list->empty == 0) {
@@ -340,13 +337,14 @@ int main(int argc, char* argv[]) {
 	list->head = list->tail = NULL;
 	list->empty = 0;
 	
+	//每个线程分配一个缓存区
+	char worker_buf[WORKER_THREAD_NUM][2048];
 	for(int i = 0; i < WORKER_THREAD_NUM; i++) {
-		pthread_create(&g_threadid[i], NULL, worker_thread_func, NULL);
+		pthread_create(&g_threadid[i], NULL, worker_thread_func, worker_buf[i]);
 	}
 	struct epoll_event ev[1024];
 	while(g_stop == 0) {
-		//int n = epoll_wait(g_epollfd, ev, 1024, 10);
-		int n = epoll_wait(g_epollfd, ev, 1024, -1);
+		int n = epoll_wait(g_epollfd, ev, 1024, 10);
 		if(n == 0) {
 			continue;
 		} else if(n < 0) {
