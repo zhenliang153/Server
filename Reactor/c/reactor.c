@@ -87,6 +87,14 @@ int back() {
 	}
 	return list->tail->fd;
 }
+
+void deleteList() {
+	while(list->empty != 0) {
+		pop_back();
+	}
+	free(list);
+	list = NULL;
+}
 /********************************************/
 
 //创建守护进程
@@ -306,6 +314,34 @@ void* worker_thread_func(void* arg) {
 	return NULL;
 }
 
+void main_loop(void) {
+	printf("main loop run ...\n");
+	struct epoll_event ev[1024];
+	while(g_stop == 0) {
+		int n = epoll_wait(g_epollfd, ev, 1024, 10);
+		if(n == 0) {
+			continue;
+		} else if(n < 0) {
+			printf("epoll_wait error!\n");
+			continue;
+		}
+		if(n > 1024) {
+			n = 1024;
+		}
+		for(int i = 0; i < n; i++) {
+			if(ev[i].data.fd == g_listenfd) {
+				pthread_cond_signal(&g_acceptcond);
+			} else {
+				pthread_mutex_lock(&g_workermutex);
+				push_front(ev[i].data.fd);
+				pthread_mutex_unlock(&g_workermutex);
+				pthread_cond_signal(&g_workercond);
+			}
+		}
+	}
+	printf("main loop exit ...\n");
+}
+
 int main(int argc, char* argv[]) {
 	int ch;
 	int daemon_mode = 0;
@@ -356,35 +392,11 @@ int main(int argc, char* argv[]) {
 	for(int i = 0; i < WORKER_THREAD_NUM; i++) {
 		pthread_create(&g_threadid[i], NULL, worker_thread_func, NULL);
 	}
-	struct epoll_event ev[1024];
-	while(g_stop == 0) {
-		int n = epoll_wait(g_epollfd, ev, 1024, 10);
-		if(n == 0) {
-			continue;
-		} else if(n < 0) {
-			printf("epoll_wait error!\n");
-			continue;
-		}
-		if(n > 1024) {
-			n = 1024;
-		}
-		for(int i = 0; i < n; i++) {
-			if(ev[i].data.fd == g_listenfd) {
-				pthread_cond_signal(&g_acceptcond);
-			} else {
-				pthread_mutex_lock(&g_workermutex);
-				push_front(ev[i].data.fd);
-				pthread_mutex_unlock(&g_workermutex);
-				pthread_cond_signal(&g_workercond);
-			}
-		}
-	}
-	
-	while(list->empty != 0) {
-		pop_back();
-	}
-	free(list);
-	list = NULL;
+	//主线程循环
+	main_loop();
+
+	//释放堆内存
+	deleteList();
 
 	return 0;
 }
