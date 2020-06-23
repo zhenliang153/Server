@@ -23,11 +23,10 @@ int g_stop = 0;
 pthread_t g_acceptthreadid = 0;
 pthread_t g_threadid[WORKER_THREAD_NUM] = { 0 };
 
-pthread_cond_t g_cond;
-pthread_mutex_t g_mutex;
 pthread_cond_t g_acceptcond;
 pthread_mutex_t g_acceptmutex;
-pthread_mutex_t g_clientmutex;
+pthread_cond_t g_workercond;
+pthread_mutex_t g_workermutex;
 
 /********************************************/
 //自定义list，从头部插入，尾部移除
@@ -131,8 +130,7 @@ int create_server_listener(unsigned int ip, short port) {
 	struct sockaddr_in servaddr;
 	memset(&servaddr, 0, sizeof(servaddr));
 	servaddr.sin_family = AF_INET;
-	//servaddr.sin_addr.s_addr = htonl(AF_INET);
-	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	servaddr.sin_addr.s_addr = htonl(ip);
 	servaddr.sin_port = htons(port);
 	if(bind(g_listenfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) == -1) {
 		printf("bind error!\n");
@@ -159,11 +157,17 @@ int create_server_listener(unsigned int ip, short port) {
 }
 
 void prog_exit(int signo) {
-	signal(SIGINT, SIG_IGN);
-	signal(SIGKILL, SIG_IGN);
-	signal(SIGTERM, SIG_IGN);
 	printf("program recv signal %d to exit.\n", signo);
 	g_stop = 1;
+
+	pthread_cond_signal(&g_acceptcond);
+	pthread_cond_broadcast(&g_workercond);
+
+	pthread_join(g_acceptthreadid, NULL);
+	for(int i = 0; i < WORKER_THREAD_NUM; i++) {
+		pthread_join(g_threadid[i], NULL);
+	}
+
 	epoll_ctl(g_epollfd, EPOLL_CTL_DEL, g_listenfd, NULL);
 	shutdown(g_listenfd, SHUT_RDWR);
 	close(g_listenfd);
@@ -172,19 +176,22 @@ void prog_exit(int signo) {
 	pthread_cond_destroy(&g_acceptcond);
 	pthread_mutex_destroy(&g_acceptmutex);
 
-	pthread_cond_destroy(&g_cond);
-	pthread_mutex_destroy(&g_mutex);
-
-	pthread_mutex_destroy(&g_clientmutex);
+	pthread_cond_destroy(&g_workercond);
+	pthread_mutex_destroy(&g_workermutex);
 }
 
 void* accept_thread_func(void* arg) {
-	while(g_stop == 0) {
-		pthread_mutex_lock(&g_acceptmutex);
-		pthread_cond_wait(&g_acceptcond, &g_acceptmutex);
-
+	printf("accept thread run...\n");
+	while(1) {
 		struct sockaddr_in clientaddr;
 		socklen_t addrlen;
+
+		pthread_mutex_lock(&g_acceptmutex);
+		pthread_cond_wait(&g_acceptcond, &g_acceptmutex);
+		if(g_stop == 1) {
+			pthread_mutex_unlock(&g_acceptmutex);
+			break;
+		}
 		int newfd = accept(g_listenfd, (struct sockaddr*)&clientaddr, &addrlen);
 		pthread_mutex_unlock(&g_acceptmutex);
 		if(newfd == -1) {
@@ -207,10 +214,11 @@ void* accept_thread_func(void* arg) {
 			printf("epoll_ctl error, fd = %d.", newfd);
 		}
 	}
+	printf("accept thread exit...\n");
 	return NULL;
 }
 
-void release_client(int clientfd) {
+void close_client(int clientfd) {
 	if(epoll_ctl(g_epollfd, EPOLL_CTL_DEL, clientfd, NULL) == -1) {
 		printf("epoll_ctl error! release client failed!\n");
 	}
@@ -218,18 +226,25 @@ void release_client(int clientfd) {
 }
 
 void* worker_thread_func(void* arg) {
-	char* strclientmsg = (char*)arg;
+	printf("worker thread run...\n");
+	//每个线程分配一个缓存区
+	char strclientmsg[2048];
 	int msglen = 0;
-	while(g_stop == 0) {
-		pthread_mutex_lock(&g_clientmutex);
+	char buf[256];
+	while(1) {
+		pthread_mutex_lock(&g_workermutex);
 		while(list->empty == 0) {
-			pthread_cond_wait(&g_cond, &g_clientmutex);
+			if(g_stop == 1) {
+				printf("worker thread exit ...\n");
+				pthread_mutex_unlock(&g_workermutex);
+				return NULL;
+			}
+			pthread_cond_wait(&g_workercond, &g_workermutex);
 		}
 		int clientfd = back();
 		pop_back();
-		pthread_mutex_unlock(&g_clientmutex);
+		pthread_mutex_unlock(&g_workermutex);
 		
-		char buf[256];
 		int isError = 0;
 		//memset(strclientmsg, 0, sizeof(strclientmsg));
 		//时间标签共21个字符
@@ -240,13 +255,13 @@ void* worker_thread_func(void* arg) {
 			if(n == -1) {
 				if(errno != EWOULDBLOCK) {
 					printf("recv error! client disconnected, fd = %d\n", clientfd);
-					release_client(clientfd);
+					close_client(clientfd);
 					isError = 1;
 				}
 				break;
 			} else if(n == 0) {
 				printf("client disconnected, fd = %d\n", clientfd);
-				release_client(clientfd);
+				close_client(clientfd);
 				isError = 1;
 				break;	
 			}
@@ -276,7 +291,7 @@ void* worker_thread_func(void* arg) {
 					continue;
 				} else {
 					printf("send error, fd = %d\n", clientfd);
-					release_client(clientfd);
+					close_client(clientfd);
 					break;
 				}
 			}
@@ -287,6 +302,7 @@ void* worker_thread_func(void* arg) {
 			}
 		}
 	}
+	printf("worker thread exit...\n");
 	return NULL;
 }
 
@@ -323,11 +339,10 @@ int main(int argc, char* argv[]) {
 	pthread_cond_init(&g_acceptcond, NULL);
 	pthread_mutex_init(&g_acceptmutex, NULL);
 
-	pthread_cond_init(&g_cond, NULL);
-	pthread_mutex_init(&g_mutex, NULL);
+	pthread_cond_init(&g_workercond, NULL);
+	pthread_mutex_init(&g_workermutex, NULL);
 
-	pthread_mutex_init(&g_clientmutex, NULL);
-
+	//启动接收新连接的线程
 	if(pthread_create(&g_acceptthreadid, NULL, accept_thread_func, NULL) != 0) {
 		printf("pthread_create error!\n");
 		return -1;
@@ -337,10 +352,9 @@ int main(int argc, char* argv[]) {
 	list->head = list->tail = NULL;
 	list->empty = 0;
 	
-	//每个线程分配一个缓存区
-	char worker_buf[WORKER_THREAD_NUM][2048];
+	//启动工作线程
 	for(int i = 0; i < WORKER_THREAD_NUM; i++) {
-		pthread_create(&g_threadid[i], NULL, worker_thread_func, worker_buf[i]);
+		pthread_create(&g_threadid[i], NULL, worker_thread_func, NULL);
 	}
 	struct epoll_event ev[1024];
 	while(g_stop == 0) {
@@ -358,10 +372,10 @@ int main(int argc, char* argv[]) {
 			if(ev[i].data.fd == g_listenfd) {
 				pthread_cond_signal(&g_acceptcond);
 			} else {
-				pthread_mutex_lock(&g_clientmutex);
+				pthread_mutex_lock(&g_workermutex);
 				push_front(ev[i].data.fd);
-				pthread_mutex_unlock(&g_clientmutex);
-				pthread_cond_signal(&g_cond);
+				pthread_mutex_unlock(&g_workermutex);
+				pthread_cond_signal(&g_workercond);
 			}
 		}
 	}
